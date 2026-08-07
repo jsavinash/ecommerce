@@ -693,129 +693,363 @@ flowchart TD
 
 ## 9. SECURITY ARCHITECTURE
 
+### 9.1 External Request Security Pipeline
+
 ```mermaid
 flowchart LR
-    subgraph External["External Traffic"]
-        ATTACK["Malicious Traffic"]
-        LEGIT["Legitimate User"]
+    subgraph External["🌍 External Traffic"]
+        ATTACK["⚠️ Malicious Traffic"]
+        LEGIT["✅ Legitimate User"]
     end
 
-    subgraph Security["Security Layers"]
-        WAF["🛡 WAF<br/>OWASP rules<br/>Bot detection"]
-        RATE["⏱ Rate Limit<br/>Token bucket<br/>per IP/user/tenant"]
-        AUTH["🔐 JWT Auth<br/>RS256<br/>15min expiry"]
-        MFA["🔑 MFA<br/>TOTP/SMS/OTP"]
-        TLS["🔒 mTLS<br/>Service-to-service"]
-        SECRETS["🔑 Vault/KMS<br/>secret rotation"]
+    subgraph Edge_Sec["🛡️ Edge Security (Layer 1)"]
+        WAF["🛡️ WAF<br/>OWASP rules<br/>SQLi/XSS/DDoS<br/>Bot detection"]
+        RATE["⏱️ Rate Limit<br/>Token bucket<br/>per IP: 50 RPS<br/>per user: 100 RPS<br/>per tenant: 10K RPS"]
     end
 
-    subgraph Services["Services"]
-        SERVICE["Internal Services"]
+    subgraph Auth_Sec["🔐 Authentication (Layer 2)"]
+        AUTH["🔐 Auth Service<br/>JWT RS256<br/>15min expiry<br/>OAuth2/OIDC"]
+        MFA["🔑 MFA<br/>TOTP / SMS / Email OTP"]
+        RBAC["👥 RBAC<br/>Role-based access<br/>Tenant isolation"]
     end
 
-    ATTACK --> WAF
+    subgraph Transport_Sec["🔒 Transport Security (Layer 3)"]
+        TLS["🔒 mTLS<br/>Service mesh<br/>Istio/Linkerd"]
+        APIKEY["🔑 API Keys<br/>Partner access<br/>HMAC signing"]
+    end
+
+    subgraph Data_Sec["🗄️ Data Security (Layer 4)"]
+        ENCRYPT["🔐 Encryption at Rest<br/>AES-256<br/>KMS-managed keys"]
+        SECRETS["🔑 Vault/KMS<br/>Secret rotation<br/>30-day cycle"]
+        AUDIT["📋 Audit Log<br/>Immutable trail<br/>Compliance"]
+    end
+
+    subgraph Services["🏗️ Internal Services"]
+        SERVICE["40 Microservices"]
+    end
+
+    ATTACK -->|"Blocked"| WAF
     LEGIT --> WAF
-    WAF --> RATE
-    RATE --> AUTH
-    AUTH --> MFA
-    MFA --> TLS
-    TLS --> SERVICE
-    SECRETS -.->|"inject secrets"| SERVICE
+    WAF -->|"Pass"| RATE
+    RATE -->|"Allowed"| AUTH
+    AUTH -->|"Token valid"| MFA
+    MFA -->|"Verified"| RBAC
+    RBAC -->|"Authorized"| TLS
+    TLS -->|"mTLS handshake"| SERVICE
+    APIKEY -->|"Partner access"| TLS
+    ENCRYPT -.->|"protects data"| SERVICE
+    SECRETS -.->|"inject credentials"| SERVICE
+    AUDIT -.->|"records actions"| SERVICE
 
-    note right of WAF: Blocks SQLi, XSS, DDoS
-    note right of RATE: 10K RPS tenant, 100 RPS user
-    note right of AUTH: JWT with tenant claim
+    note right of WAF: Blocks SQLi, XSS, DDoS, bots
+    note right of RATE: Prevents abuse & flash-sale bots
+    note right of AUTH: JWT contains tenant_id claim
     note right of MFA: Optional per tenant config
-    note right of TLS: mTLS via service mesh (Istio/Linkerd)
+    note right of RBAC: Per-tenant roles & permissions
+    note right of TLS: All service-to-service via mesh
+    note right of ENCRYPT: DB volumes + backups encrypted
     note right of SECRETS: DB creds rotate every 30 days
+    note right of AUDIT: Admin actions immutable
 ```
+
+### 9.2 Service-to-Service Security (mTLS via Service Mesh)
+
+```mermaid
+sequenceDiagram
+    participant SVC_A as Order Service
+    participant MESH as Istio/Linkerd<br/>Service Mesh
+    participant SVC_B as Payment Service
+    participant CA as Certificate Authority<br/>(SPIFFE/SPIRE)
+
+    SVC_A->>CA: 1. Request identity certificate
+    CA-->>SVC_A: 2. Issue SVID (SPIFFE ID)
+    SVC_A->>MESH: 3. gRPC call with mTLS
+    MESH->>MESH: 4. Verify SVID + enforce policy
+    MESH->>SVC_B: 5. Forward with mTLS
+    SVC_B-->>MESH: 6. Response
+    MESH-->>SVC_A: 7. Response
+
+    Note over MESH: Enforces: mTLS, RBAC policies,<br/>rate limits, retries, circuit breaking
+```
+
+### 9.3 Security Controls Matrix
+
+| Layer | Control | Implementation | Protects Against |
+|---|---|---|---|
+| **Edge** | WAF | OWASP CRS rules, bot detection | SQLi, XSS, DDoS, credential stuffing |
+| **Edge** | Rate Limit | Redis token bucket | Abuse, flash-sale bots, scraping |
+| **Auth** | JWT | RS256, 15min expiry, refresh rotation | Token theft, replay |
+| **Auth** | MFA | TOTP/SMS/Email OTP | Account takeover |
+| **Auth** | RBAC | Per-tenant roles | Privilege escalation |
+| **Transport** | mTLS | SPIFFE/SPIRE via mesh | Man-in-the-middle, spoofing |
+| **Transport** | API Keys | HMAC-signed partner requests | Unauthorized API access |
+| **Data** | Encryption at Rest | AES-256, KMS | Data breach, theft |
+| **Data** | Secrets | Vault/KMS rotation | Credential leakage |
+| **Data** | Audit Log | Immutable append-only | Insider threats, compliance |
 
 ---
 
 ## 10. OBSERVABILITY & MONITORING
 
+### 10.1 Three Pillars of Observability
+
 ```mermaid
 flowchart TB
-    subgraph Services2["Instrumented Services"]
+    subgraph Services2["🏗️ Instrumented Services (40)"]
         SVC1["Order Service"]
         SVC2["Payment Service"]
-        SVC3["All 40 Services"]
+        SVC3["Catalog Service"]
+        SVC4["All Other Services"]
     end
 
-    subgraph Collect["Collection Layer"]
-        OTel["📡 OpenTelemetry SDK<br/>traces + metrics + logs"]
-        PROM["📊 Prometheus<br/>scrapes /metrics"]
-        TEMPO["⏱ Tempo<br/>trace backend"]
-        LOKI["📋 Loki<br/>log aggregation"]
+    subgraph Instrument["📡 Instrumentation Layer"]
+        OTel["OpenTelemetry SDK<br/>Auto-instrumentation<br/>+ custom spans"]
+        METRICS_EP["/actuator/prometheus<br/>Micrometer metrics"]
+        LOG_JSON["Structured JSON logs<br/>with trace_id + span_id"]
     end
 
-    subgraph Visualize["Visualization"]
-        GRAFANA["📈 Grafana Dashboards"]
-        ALERT["🚨 Alertmanager"]
-        PAGER["📟 PagerDuty/On-call"]
+    subgraph Collect["📥 Collection Layer"]
+        PROM["📊 Prometheus<br/>scrapes /metrics<br/>every 15s"]
+        TEMPO["⏱️ Tempo<br/>OTLP trace ingestion<br/>10% sampling"]
+        LOKI["📋 Loki<br/>OTLP log ingestion<br/>label-based indexing"]
+    end
+
+    subgraph Store["🗄️ Storage & Retention"]
+        PROM_STORE["Prometheus TSDB<br/>15-day retention"]
+        TEMPO_STORE["Tempo backend<br/>7-day retention"]
+        LOKI_STORE["Loki store<br/>30-day retention"]
+    end
+
+    subgraph Visualize["📈 Visualization & Alerting"]
+        GRAFANA["Grafana Dashboards<br/>RED metrics per service<br/>Trace waterfall views<br/>Log correlation"]
+        ALERT["🚨 Alertmanager<br/>SLO breach alerts<br/>Error budget burn"]
+        PAGER["📟 PagerDuty<br/>On-call rotation"]
+        SLACK["💬 Slack<br/>#alerts channel"]
     end
 
     SVC1 --> OTel
     SVC2 --> OTel
     SVC3 --> OTel
-    OTel --> PROM & TEMPO & LOKI
-    PROM --> GRAFANA
-    TEMPO --> GRAFANA
-    LOKI --> GRAFANA
+    SVC4 --> OTel
+    SVC1 --> METRICS_EP
+    SVC2 --> METRICS_EP
+    SVC3 --> METRICS_EP
+    SVC4 --> METRICS_EP
+    SVC1 --> LOG_JSON
+    SVC2 --> LOG_JSON
+    SVC3 --> LOG_JSON
+    SVC4 --> LOG_JSON
+
+    OTel -->|"OTLP traces"| TEMPO
+    OTel -->|"OTLP logs"| LOKI
+    METRICS_EP -->|"scrape :9090"| PROM
+    LOG_JSON -->|"push"| LOKI
+
+    PROM --> PROM_STORE
+    TEMPO --> TEMPO_STORE
+    LOKI --> LOKI_STORE
+
+    PROM_STORE --> GRAFANA
+    TEMPO_STORE --> GRAFANA
+    LOKI_STORE --> GRAFANA
     GRAFANA -->|"SLO breach"| ALERT
     ALERT --> PAGER
+    ALERT --> SLACK
 
     note right of GRAFANA
-        Checkout P95 < 1.5s
-        Inventory P95 < 100ms
-        Search P95 < 50ms
-        Availability 99.999%
+        📊 Checkout P95 < 1.5s
+        📊 Inventory P95 < 100ms
+        📊 Search P95 < 50ms
+        📊 Availability 99.999%
+        📊 Error budget: 0.001%
     end note
 ```
+
+### 10.2 Infrastructure Monitoring (Beyond Services)
+
+```mermaid
+flowchart LR
+    subgraph Infra["🏗️ Infrastructure Components"]
+        PG["PostgreSQL × 30"]
+        REDIS["Redis Cluster × 6"]
+        KAFKA["Kafka × 3"]
+        ES["Elasticsearch × 3"]
+        CH["ClickHouse × 3"]
+        K8S["Kubernetes"]
+    end
+
+    subgraph Exporters["📤 Exporters"]
+        PG_EXP["postgres_exporter<br/>:9187"]
+        REDIS_EXP["redis_exporter<br/>:9121"]
+        KAFKA_EXP["kafka_exporter<br/>:9308"]
+        ES_EXP["elasticsearch_exporter<br/>:9114"]
+        CH_EXP["clickhouse_exporter<br/>:9116"]
+        K8S_EXP["kube-state-metrics<br/>+ node-exporter"]
+    end
+
+    subgraph Prom2["📊 Prometheus"]
+        PROM_INFRA["Prometheus<br/>infra scrape jobs"]
+    end
+
+    subgraph Dash["📈 Dashboards"]
+        GRAFANA_INFRA["Grafana<br/>Infra Dashboards"]
+    end
+
+    PG --> PG_EXP
+    REDIS --> REDIS_EXP
+    KAFKA --> KAFKA_EXP
+    ES --> ES_EXP
+    CH --> CH_EXP
+    K8S --> K8S_EXP
+
+    PG_EXP --> PROM_INFRA
+    REDIS_EXP --> PROM_INFRA
+    KAFKA_EXP --> PROM_INFRA
+    ES_EXP --> PROM_INFRA
+    CH_EXP --> PROM_INFRA
+    K8S_EXP --> PROM_INFRA
+
+    PROM_INFRA --> GRAFANA_INFRA
+
+    note right of KAFKA_EXP: Consumer lag monitoring<br/>critical for FLQ drainer
+    note right of PG_EXP: Connection pool usage<br/>deadlocks, replication lag
+    note right of REDIS_EXP: Memory, evictions,<br/>hit rate, latency
+```
+
+### 10.3 SLOs & Error Budgets
+
+| SLO | SLI | Error Budget | Alert Threshold |
+|---|---|---|---|
+| Checkout P95 < 1.5s | Latency of `POST /checkout` | 0.001% | 50% budget consumed |
+| Inventory P95 < 100ms | Latency of `PATCH /inventory/reserve` | 0.01% | 50% budget consumed |
+| Search P95 < 50ms | Latency of `GET /catalog/search` | 0.01% | 50% budget consumed |
+| Availability 99.999% | Uptime of all services | 5.26 min/yr | 50% budget consumed |
+| Kafka Consumer Lag < 10K | Max lag across all groups | — | Alert at 5K |
+| Cache Hit Rate > 90% | Redis hit ratio | — | Alert at 85% |
 
 ---
 
 ## 11. SERVICE DISCOVERY & INTER-SERVICE COMMUNICATION
 
+### 11.1 Service Discovery Flow (Eureka/Consul)
+
+```mermaid
+sequenceDiagram
+    participant SVC as Order Service (client)
+    participant REG as Service Registry<br/>(Eureka/Consul)
+    participant INV as Inventory Service<br/>(instance 1)
+    participant INV2 as Inventory Service<br/>(instance 2)
+    participant MESH as Service Mesh<br/>(Istio/Linkerd)
+
+    Note over INV, INV2: Startup: Register with health check
+    INV->>REG: Register (IP:8085, health: /actuator/health)
+    INV2->>REG: Register (IP:8086, health: /actuator/health)
+
+    SVC->>REG: 1. Discover "inventory-service"
+    REG-->>SVC: 2. Instance list [IP:8085, IP:8086]
+    SVC->>MESH: 3. gRPC call (client-side LB)
+    MESH->>INV: 4. Route to instance 1 (round-robin)
+    INV-->>MESH: 5. Response
+    MESH-->>SVC: 6. Response
+
+    Note over INV2: Heartbeat every 30s
+    Note over REG: Evict unhealthy after 3 missed heartbeats
+    Note over MESH: Enforces: mTLS, retries,<br/>circuit breaking, timeouts
+```
+
+### 11.2 Two Communication Patterns
+
 ```mermaid
 flowchart TB
-    subgraph Registry["Service Discovery (Eureka/Consul)"]
-        REG[("Service Registry<br/>healthy instance list")]
+    subgraph Patterns["📡 Communication Patterns"]
+        direction TB
+        SYNC["🔗 SYNCHRONOUS (gRPC)<br/>HTTP/2 + mTLS<br/>Strong consistency<br/>Low latency<br/>Timeout: 500ms-2s"]
+        ASYNC["📨 ASYNCHRONOUS (Kafka)<br/>Event-driven<br/>Eventual consistency<br/>Decoupled<br/>Outbox pattern"]
     end
 
-    subgraph Comm["Communication Patterns"]
-        sync["🔗 Synchronous gRPC<br/>HTTP/2 + mTLS<br/>500ms-2s timeouts"]
-        async["📨 Async Kafka<br/>Event-driven<br/>Outbox pattern"]
+    subgraph SyncUse["✅ Use gRPC When"]
+        S1["• Cart load (500ms)"]
+        S2["• Price validation (500ms)"]
+        S3["• Inventory reserve (2s)"]
+        S4["• Payment initiate (2s)"]
+        S5["• Fraud check (500ms)"]
     end
 
-    subgraph Example["Example: Checkout Flow"]
-        ORDER_SVC["Order Service"]
-        INVENTORY_SVC["Inventory Service"]
-        PAYMENT_SVC["Payment Service"]
+    subgraph AsyncUse["✅ Use Kafka When"]
+        A1["• Order created → notify"]
+        A2["• Payment captured → confirm"]
+        A3["• Inventory changed → index"]
+        A4["• Analytics events"]
+        A5["• Saga compensation retry"]
     end
 
-    ORDER_SVC -->|"1. Discover inventory"| REG
-    REG -->|"2. Healthy instance"| ORDER_SVC
-    ORDER_SVC -->|"3. gRPC Reserve (sync)"| INVENTORY_SVC
-    ORDER_SVC -->|"4. gRPC Initiate (sync)"| PAYMENT_SVC
-    ORDER_SVC -->|"5. Emit event (async)"| async
-    async --> INVENTORY_SVC
-    async --> PAYMENT_SVC
-
-    note right of sync
-        Cart load: 500ms
-        Price validate: 500ms
-        Inventory reserve: 2s
-        Payment initiate: 2s
-    end note
-
-    note right of async
-        Order events → Kafka
-        Notification → Kafka
-        Analytics → Kafka
-        Compensation → Kafka retry
-    end note
+    SYNC --- SyncUse
+    ASYNC --- AsyncUse
 ```
+
+### 11.3 Checkout Flow Communication Map
+
+```mermaid
+flowchart LR
+    subgraph SyncCalls["🔗 Synchronous gRPC Calls"]
+        direction TB
+        CK["Checkout Orchestrator :8084"]
+        CT["Cart Service :8083<br/>⏱ 500ms"]
+        CAT["Catalog :8082<br/>⏱ 500ms"]
+        FLQ["FLQ :8088<br/>⏱ 100ms"]
+        INV["Inventory :8085<br/>⏱ 2s"]
+        FRAUD["Fraud :8107<br/>⏱ 500ms"]
+        PY["Payment :8086<br/>⏱ 2s"]
+    end
+
+    subgraph AsyncEvents["📨 Async Kafka Events"]
+        direction TB
+        K_ORD["order.events"]
+        K_NOTIF["notification.events"]
+        K_AN["analytics.events"]
+        K_SAGA["saga.retry"]
+    end
+
+    subgraph Consumers["📥 Event Consumers"]
+        direction TB
+        NOTIF["Notification Hub"]
+        AN["Analytics"]
+        REC["Recommendation"]
+        SW["Search Worker"]
+    end
+
+    CK -->|"1. Lock cart"| CT
+    CK -->|"2. Validate price"| CAT
+    CK -->|"3. Enqueue"| FLQ
+    CK -->|"4. Reserve stock"| INV
+    CK -->|"5. Risk check"| FRAUD
+    CK -->|"6. Initiate payment"| PY
+
+    CK -->|"emit"| K_ORD
+    PY -->|"emit"| K_ORD
+    K_ORD --> NOTIF
+    K_ORD --> AN
+    K_ORD --> REC
+    K_ORD --> SW
+    K_NOTIF --> NOTIF
+    K_AN --> AN
+    K_SAGA --> CK
+
+    note right of SyncCalls: Strong consistency,<br/>circuit breakers,<br/>bulkheads, retries
+    note right of AsyncEvents: Eventual consistency,<br/>outbox pattern,<br/>exactly-once delivery
+```
+
+### 11.4 Communication Timeout & Retry Matrix
+
+| Call | Timeout | Retries | Circuit Breaker | Fallback |
+|---|---|---|---|---|
+| Cart load | 500ms | 2 | Yes | Return empty cart |
+| Price validation | 500ms | 2 | Yes | Use cached price |
+| FLQ enqueue | 100ms | 1 | No | Direct to Kafka |
+| Inventory reserve | 2s | 3 (backoff) | Yes | Fail checkout (409) |
+| Fraud check | 500ms | 1 | Yes | Allow (risk=0) |
+| Payment initiate | 2s | 3 (backoff) | Yes | PSP fallback routing |
+| Kafka publish | 2s | 3 | No | Outbox retry |
 
 ---
 
